@@ -1,0 +1,36 @@
+{
+  "env": {
+    "CLAUDE_CODE_PLUGIN_DIR_WATCH": "1",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "350000"
+  },
+  "outputStyle": "Concise",
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": "~/.claude/hooks/protect-secrets.sh" }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": "~/.claude/hooks/format.sh" }] }
+    ]
+  },
+  "extraKnownMarketplaces": {
+    "ponytail": { "source": { "source": "github", "repo": "DietrichGebert/ponytail" } },
+    "ui-ux-pro-max-skill": { "source": { "source": "git", "url": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill.git" } },
+    "thedotmack": { "source": { "source": "git", "url": "https://github.com/thedotmack/claude-mem.git" } },
+    "claude-plugins-official": { "source": { "source": "git", "url": "https://github.com/anthropics/claude-plugins-official.git" } },
+    "karpathy-skills": { "source": { "source": "git", "url": "https://github.com/multica-ai/andrej-karpathy-skills.git" } },
+    "cloudflare": { "source": { "source": "github", "repo": "cloudflare/skills" } },
+    "effortless": { "source": { "source": "github", "repo": "HeyCubit/effortless" } }
+  },
+  "enabledPlugins": {
+    "ponytail@ponytail": true,
+    "ui-ux-pro-max@ui-ux-pro-max-skill": true,
+    "claude-mem@thedotmack": true,
+    "frontend-design@claude-plugins-official": true,
+    "andrej-karpathy-skills@karpathy-skills": true,
+    "code-review@claude-plugins-official": true,
+    "cloudflare@cloudflare": true,
+    "effortless@effortless": true
+  }
+}

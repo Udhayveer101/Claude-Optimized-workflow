@@ -5,10 +5,11 @@
       "args": ["-y", "firecrawl-mcp"],
       "env": { "FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}" }
     },
-    "github": {
-      "type": "http",
-      "url": "https://api.githubcopilot.com/mcp/",
-      "headers": { "Authorization": "Bearer ${GITHUB_PAT}" }
-    }
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest", "--browser", "chromium"]
+    },
+    "motion": { "type": "http", "url": "https://mcp.motion.dev" },
+    "cloudflare-docs": { "type": "http", "url": "https://docs.mcp.cloudflare.com/mcp" }
   }
 }

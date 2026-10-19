@@ -1,0 +1,6 @@
+{
+  "name": "cache-watch",
+  "version": "0.1.0",
+  "description": "Live prompt-cache, limits and context panel with a one-press handoff before the cache goes cold",
+  "types": "./types/index.d.ts"
+}

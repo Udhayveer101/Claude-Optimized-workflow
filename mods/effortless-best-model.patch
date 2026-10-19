@@ -1,0 +1,347 @@
+diff -ru a/.claude-plugin/plugin.json b/.claude-plugin/plugin.json
+--- a/.claude-plugin/plugin.json
++++ b/.claude-plugin/plugin.json
+@@ -86,10 +86,11 @@
+     },
+     "modelAuto": {
+       "type": "string",
+-      "title": "Cheaper model when it can (experimental)",
+-      "description": "on: a prompt the judge calls simple may run on a cheaper model (Haiku 5.5 or Sonnet), never above the chat's own, when the switch pays. It rarely does in a chat that is in use: the other model rereads the whole chat. off (default): every prompt runs on the chat's model.",
++      "title": "Model for each prompt",
++      "description": "best: hard work moves up to Opus, simple work down to Haiku or Sonnet when that pays; never Fable. on: a prompt the judge calls simple may run on a cheaper model (Haiku 5.5 or Sonnet), never above the chat's own, when the switch pays. It rarely does in a chat that is in use: the other model rereads the whole chat. off (default): every prompt runs on the chat's model.",
+       "default": "off",
+       "options": [
++        "best",
+         "on",
+         "off"
+       ]
+Only in 1.71.0: .impeccable
+diff -ru a/hooks/register.tsx b/hooks/register.tsx
+--- a/hooks/register.tsx
++++ b/hooks/register.tsx
+@@ -76,7 +76,7 @@
+ const isAuto = atom({ plugin: 'effortless', key: 'isAuto' } as const, true)
+ const JEV_TIMEOUT_MS = 3000
+ const JEV_URL = 'https://api.typesafe.ai/v1/systemone'
+-const EMPTY_SPENT: Spent = { prompts: 0, requests: 0, input: 0, write: 0, read: 0, out: 0, byEffort: {}, judge: { jev: 0, haiku: 0, ms: 0, tokens: 0 }, moved: 0, redone: 0 }
++const EMPTY_SPENT: Spent = { prompts: 0, requests: 0, input: 0, write: 0, read: 0, out: 0, byEffort: {}, judge: { jev: 0, haiku: 0, ms: 0, tokens: 0 }, moved: 0, redone: 0, up: 0 }
+ const SWITCHED_MS = 2500
+ // The prompt cache lives this long after the last request read or wrote it. A response may say which lifetime its
+ // cache writes got (usage.cache_creation: ephemeral_1h / ephemeral_5m); until one does, 1 hour is assumed: 99% of
+@@ -194,6 +194,7 @@
+ ]
+ // The Model card: the two ways to run. Effort follows the judge in both.
+ const MODEL_CHOICES = [
++  { value: 'best', label: 'Best for the task', tag: '', about: "Hard work moves up to Opus, simple work down to Haiku or Sonnet when that pays. A redone answer retries on Opus. Never Fable." },
+   { value: 'on', label: 'Cheaper when it can', tag: 'experimental', about: "A simple prompt may run on Haiku or Sonnet. Rarely pays: the other model has to reread the whole chat." },
+   { value: 'off', label: "Always the chat's", tag: '', about: "Every prompt keeps the model you picked. Only effort changes." },
+ ] as const
+@@ -615,7 +616,7 @@
+   /** advised: the footer slot is Compact until Haiku advises a handoff. always: it is always the Handoff button. */
+   handoffButton: 'advised' | 'always'
+   /** A prompt the judge calls simple runs on a cheaper model than the chat's (never a dearer one). */
+-  modelAuto: 'on' | 'off'
++  modelAuto: 'best' | 'on' | 'off'
+   /** on: every subagent the chat sends off gets an effort picked by the judge before it starts. */
+   helpers: 'on' | 'off'
+   /** The accent colour of everything effortless draws: the brand violet, Claude orange or cherry-blossom rose. */
+@@ -672,7 +673,8 @@
+     handoffButton: str(o.handoffButton) === 'always' ? 'always' : 'advised',
+     // Off unless switched on: one prompt on another model rewrites the whole chat into that model's cache, which costs
+     // more than it saves in a chat that is in use (measured 2026-10-10).
+-    modelAuto: str(o.modelAuto) === 'on' ? 'on' : 'off',
++    // best: also up to Opus for hard work, which costs more per prompt but buys quality where the judge says it is needed.
++    modelAuto: str(o.modelAuto) === 'best' ? 'best' : str(o.modelAuto) === 'on' ? 'on' : 'off',
+     helpers: str(o.helpers) === 'on' ? 'on' : 'off',
+     theme: THEMES.find(t => t === str(o.theme)) ?? 'violet',
+     appearance: (['dark', 'light'] as const).find(a => a === str(o.appearance)) ?? 'auto',
+@@ -1104,6 +1106,7 @@
+ /** A model change reloads the context, so it only happens when the person says yes. */
+ async function switchModel($: EngineInterface, model: ModelKey) {
+   try {
++    modelSwitchByMod = true
+     await $.command.run({ command: 'model', args: model })
+     declined = null
+     await update($, suggestion, () => null)
+@@ -1111,6 +1114,8 @@
+     if (current) await choose($, { ...current, model })
+   } catch {
+     $.ui.toast('Could not switch the model right now')
++  } finally {
++    modelSwitchByMod = false
+   }
+ }
+ 
+@@ -1132,6 +1137,7 @@
+     byEffort: v.byEffort && typeof v.byEffort === 'object' ? v.byEffort : {},
+     judge: { jev: num(judged.jev), haiku: num(judged.haiku), ms: num(judged.ms), tokens: num(judged.tokens) },
+     moved: num(v.moved),
++    up: num(v.up),
+     redone: num(v.redone),
+     helpers: {
+       runs: v.helpers?.runs && typeof v.helpers.runs === 'object' ? v.helpers.runs : {},
+@@ -2078,7 +2084,7 @@
+   const t = asSpent(raw)
+   const judged = t.judge.jev + t.judge.haiku
+   const helperRuns = EFFORTS.reduce((n, e) => n + (t.helpers.runs[e] ?? 0), 0)
+-  if (t.prompts === 0 && judged === 0 && t.moved === 0 && helperRuns === 0) return 'nothing measured yet'
++  if (t.prompts === 0 && judged === 0 && t.moved === 0 && !t.up && helperRuns === 0) return 'nothing measured yet'
+   const input = t.input * WEIGHT.input
+   const write = t.write * WEIGHT.write
+   const cached = t.read * WEIGHT.read
+@@ -2096,6 +2102,7 @@
+   if (t.moved) {
+     lines.push(`Cheaper model: ${t.moved} prompt${t.moved === 1 ? '' : 's'} moved down, ${t.redone} redone (${share(t.redone, t.moved)})`)
+   }
++  if (t.up) lines.push(`Better model: ${t.up} prompt${t.up === 1 ? '' : 's'} moved up to Opus`)
+   if (helperRuns) {
+     const per = EFFORTS.filter(e => t.helpers.runs[e]).map(e => `${EFFORT_LABELS[e]} ${t.helpers.runs[e]}`)
+     lines.push(`Helpers: ${helperRuns} subagent${helperRuns === 1 ? '' : 's'} (${per.join(', ')}), ${t.helpers.requests} requests, cost about ${tokens(Math.round(t.helpers.cost))} tokens`)
+@@ -2127,6 +2134,8 @@
+   const turnOn = !(await read($, isAuto))
+   await update($, isAuto, () => turnOn)
+   await $.store.set('isAuto', turnOn)
++  // Auto on hands the model back too.
++  if (turnOn) modelPinned = false
+ }
+ 
+ async function choose($: EngineInterface, next: Pick | null) {
+@@ -2286,18 +2295,30 @@
+ let coldForced = false
+ let handoffTimer: { cancel: () => void } | undefined
+ const HANDOFF_POLL_MS = 1000
+-// The model this prompt's requests run on when the judge picked a cheaper one than the chat's, else null. The chat's
++// The model this prompt's requests run on when the judge picked another one than the chat's (cheaper, or with
++// modelAuto best also Opus for hard work), else null. The chat's
+ // own model stays as it is: each request is sent to the cheaper model in turn.step, so the chat model's cache stays warm
+ // for the next prompt that needs it.
+ let routed: ModelKey | null = null
++// The person picked the model themselves (the app's picker, /model): routing leaves the chat's model alone until Auto
++// is switched on again, the same way a picked effort turns Auto off.
++let modelPinned = false
++// Set while the mod itself runs /model, so that switch is not taken for the person's.
++let modelSwitchByMod = false
+ // Prompts left that stay on the chat's model, after a cheaper answer was redone.
+ let stayUp = 0
+ const MODEL_RANK: ModelKey[] = ['haiku', 'sonnet', 'opus', 'fable']
+-/** The model a verdict sends this prompt to: a cheaper one than the chat's, or null for the chat's own. Never Fable. */
+-export function routeTo(verdict: ModelKey, inUse: ModelKey): ModelKey | null {
+-  if (verdict === 'fable') return null
+-  return MODEL_RANK.indexOf(verdict) < MODEL_RANK.indexOf(inUse) ? verdict : null
++/**
++ * The model a verdict sends this prompt to: a cheaper one than the chat's, with `up` also a dearer one up to Opus, or
++ * null for the chat's own. Never Fable: about 2.5x Opus, and an effort change there rewrites the cache, so up stops at Opus.
++ */
++export function routeTo(verdict: ModelKey, inUse: ModelKey, up = false): ModelKey | null {
++  const to = verdict === 'fable' ? (up ? 'opus' : null) : verdict
++  if (!to) return null
++  const step = MODEL_RANK.indexOf(to) - MODEL_RANK.indexOf(inUse)
++  return step < 0 || (up && step > 0) ? to : null
+ }
++const below = (m: ModelKey | null, than: ModelKey) => m !== null && MODEL_RANK.indexOf(m) < MODEL_RANK.indexOf(than)
+ 
+ // What one input token costs on each model, in Sonnet's price: Opus about 2x (measured: the same prompt cost 1.97x on Opus), Haiku about a third. These are the ratios
+ // the savings estimate uses; they only have to be right enough to tell which side of a switch is cheaper.
+@@ -3402,7 +3423,7 @@
+               word looked cheap: another font, a late start and a jump back to the text. */}
+           <Text key="dash-level" color={wordColor} bold>{v.judging && Svg ? 'Deciding' : what}</Text>
+           {/* The model this prompt runs on, dim, after the effort: the judge's routing to a cheaper model shows as it happens. */}
+-          {!v.judging && v.auto && MODELS.find(m => m.key === (routed ?? v.modelNow)) ? (
++          {!v.judging && MODELS.find(m => m.key === (routed ?? v.modelNow)) ? (
+             <Text key="dash-model" color={DASH_DIM}>{` · ${MODELS.find(m => m.key === (routed ?? v.modelNow))!.label}`}</Text>
+           ) : null}
+           {/* While the judge decides: the progress bar's thinking dots, as a plain image (its CSS still runs, and a
+@@ -3507,6 +3528,8 @@
+   const setModel = (model: ModelKey) => async () => {
+     await update($, isAutoModel, () => false)
+     await $.store.set('isAutoModel', false)
++    modelPinned = true
++    routed = null
+     await changeModel(model)
+   }
+   // The person sends /model, so the app's own control moves too; with a draft in the box the mod runs it.
+@@ -3995,7 +4018,7 @@
+           `handoff: ${await read($, handoffStage)}`,
+           `last fork: ${lastFork ? `${lastFork.outcome}, ${ago(lastFork.at)}` : 'none'}`,
+           `hidden: ${config.hide.join(',') || 'nothing'}`,
+-          `model: ${config.modelAuto === 'on' ? `cheaper when it can, now ${routed ?? 'the chat\'s'}` : 'always the chat\'s'}`,
++          `model: ${config.modelAuto !== 'off' ? `${config.modelAuto === 'best' ? 'best for the task' : 'cheaper when it can'}, now ${routed ?? 'the chat\'s'}` : 'always the chat\'s'}`,
+           lastRequest
+             ? `last request: app asked ${lastRequest.appModel} at ${lastRequest.appEffort ?? 'none'}, sent ${lastRequest.model} at ${lastRequest.effort ?? 'none'}${lastRequest.model === lastRequest.appModel && lastRequest.effort === lastRequest.appEffort ? ' (unchanged)' : ' (changed by effortless)'}, ${ago(lastRequest.at)}`
+             : 'last request: none yet',
+@@ -4108,7 +4131,7 @@
+       const inUse = await sessionModel($)
+       const startedAt = Date.now()
+       const { verdict, tokens: judgeTokens } = await judge($, shown, {
+-        model: inUse,
++        model: routed ?? inUse,
+         effort: (await read($, pick))?.effort ?? 'medium',
+         why: '',
+         by: 'manual',
+@@ -4145,26 +4168,36 @@
+         }
+         // A prompt the judge calls simple runs on a cheaper model; a message typed mid-turn leaves the running choice.
+         if (!midTurn) {
+-          let to = wantsEffort && config.modelAuto === 'on' ? routeTo(verdict.model, inUse) : null
++          const up = config.modelAuto === 'best'
++          let to = wantsEffort && config.modelAuto !== 'off' && !modelPinned ? routeTo(verdict.model, inUse, up) : null
++          const redo = looksLikeRedo(e.text)
+           // The last prompt ran on a cheaper model and this one says it was wrong: that is a miss. The retry runs on the
+           // chat's own model, and so do the next few prompts.
+-          if (routed && looksLikeRedo(e.text)) {
++          if (redo && below(routed, inUse)) {
+             stayUp = REDO_STAY_PROMPTS
+             await update($, saved, old => ({ ...asSpent(old), redone: asSpent(old).redone + 1 }))
+             void proof($, `redo after ${routed}: the next ${REDO_STAY_PROMPTS} prompts stay on ${inUse}`)
++          } else if (redo && up && !routed && !modelPinned && below(inUse, 'opus')) {
++            // Best for the task: an answer on the chat's own model was wrong, so the retry gets the stronger one.
++            to = 'opus'
++            void proof($, `redo after ${inUse}: the retry runs on opus`)
+           }
+           if (stayUp > 0) {
+             stayUp--
+-            if (to) void proof($, `stays on ${inUse}: a cheaper answer was just redone (${stayUp} more)`)
+-            to = null
++            if (below(to, inUse)) {
++              void proof($, `stays on ${inUse}: a cheaper answer was just redone (${stayUp} more)`)
++              to = null
++            }
+           }
+-          // A switch to a model whose cache is cold writes the whole chat to it: stay when that costs more than it saves.
++          // A switch down to a model whose cache is cold writes the whole chat to it: stay when that costs more than it
++          // saves. A move up is for quality, not price, so it is not held to this.
+           const now = await $.clock.now().catch(() => Date.now())
+-          if (to && !routeWorth(to, inUse, lastContext?.tokens ?? 0, { to: isWarm(to, now), inUse: !(cacheExpires > 0 && now >= cacheExpires) })) {
++          if (below(to, inUse) && !routeWorth(to!, inUse, lastContext?.tokens ?? 0, { to: isWarm(to!, now), inUse: !(cacheExpires > 0 && now >= cacheExpires) })) {
+             void proof($, `stays on ${inUse}: ${to} has a cold cache, switching would cost more`)
+             to = null
+           }
+-          if (to) await update($, saved, old => ({ ...asSpent(old), moved: asSpent(old).moved + 1 }))
++          if (below(to, inUse)) await update($, saved, old => ({ ...asSpent(old), moved: asSpent(old).moved + 1 }))
++          else if (to) await update($, saved, old => ({ ...asSpent(old), up: asSpent(old).up + 1 }))
+           if (to !== routed) {
+             routed = to
+             void proof($, to ? `this prompt runs on ${to} (the chat is on ${inUse})` : `back on ${inUse}`)
+@@ -4189,6 +4222,15 @@
+   // A switch from anywhere (the app's picker, /model, a fallback) moves the pick at once.
+   on('classic.PostModelSwitch', async ($, e, next) => {
+     const result = await next(e)
++    // A change the mod did not make, to a model other than the one the band shows, is the person's: it wins and routing waits.
++    const shown = await read($, model)
++    const key = keyOf(e.to_model)
++    if (!modelSwitchByMod && shown && key && key !== shown && !modelPinned && config.modelAuto !== 'off') {
++      modelPinned = true
++      routed = null
++      void proof($, `you set the model ${key} yourself, routing off until Auto is switched on`)
++      $.ui.toast(`effortless: the model stays on ${MODELS.find(m => m.key === key)!.label}. Turn Auto on to hand it back.`)
++    }
+     await modelIs($, e.to_model)
+     return result
+   })
+@@ -4228,7 +4270,7 @@
+         return yield* send(e)
+       }
+     }
+-    // The judge put this prompt on a cheaper model: each of its requests goes there, at the picked effort.
++    // The judge put this prompt on another model (cheaper, or Opus for hard work): each of its requests goes there, at the picked effort.
+     if (e.agentId === undefined && routed && (await read($, isAuto))) {
+       const to = MODELS.find(m => m.key === routed)!.id
+       const picked = await read($, pick)
+@@ -4579,7 +4621,7 @@
+       const judgeName = shown.judge === 'haiku' ? 'Haiku' : hasKey || shown.judge === 'jev' ? 'Haiku + Jev' : 'Haiku'
+       const summaries: Record<SettingsCard, string> = {
+         effort: `${BIAS_WORDS[shown.bias + 2]} · ${shown.floor} to ${shown.ceiling}${shown.helpers === 'on' ? ' · helpers' : ''}`,
+-        model: shown.modelAuto === 'on' ? 'Cheaper when it can' : "Always the chat's",
++        model: shown.modelAuto === 'best' ? 'Best for the task' : shown.modelAuto === 'on' ? 'Cheaper when it can' : "Always the chat's",
+         judge: tested && tested.ok !== null ? `${judgeName} · ${tested.ok ? 'working' : 'failing'}` : judgeName,
+         handoff: `${shown.handoffSkill ? `/${shown.handoffSkill}` : 'Built in'} · compact alert at ${shown.swampAt}%`,
+         show: `${shown.layout === 'minimal' ? 'Minimal' : 'Dashboard'} · ${2 - ['timer', 'reason'].filter(h => hidden.includes(h)).length} of 2 on`,
+diff -ru a/tests/effortless.test.ts b/tests/effortless.test.ts
+--- a/tests/effortless.test.ts
++++ b/tests/effortless.test.ts
+@@ -1,7 +1,7 @@
+ import { describe, expect, mock, test as baseTest } from 'claude-code/testing'
+ import type { On } from 'claude-code'
+ import type { Engine } from 'claude-code/testing'
+-import { helperFloor, namedEffort, hotVisible, looksLikeRedo, REDO_STAY_PROMPTS, routeWorth, syncPlan, tipped, bounded, handoffEvidence, parseHandoffAnswer, withJevKey, parseVerdict, capped, resetLabel, HANDOFF_PROMPT, handoffMessage, withAttachments, endsOnQuestion, keepsEffort, benchGrade, benchReport, judgeFailure, contextFrom, readConfig, asSpent, cacheColor, cacheLabel, cacheClock, cacheSafe, cacheTtlOf, mostlyCached, isFollowUp, parseJevAnswer, parseJevKey, savedText, forkOutcome, setupNext, setupBack, setupCounter, dashboardLines, flashColor, handoffGlowStep, weighted, handoffLook, isNewer, latestRelease, updateSnoozed, updateFailure, claudeCandidates, noClaudeHint, compactTranscript, judgeGlowSvg, judgeGlowAt, judgeBrightnessAt, JUDGE_RISE_MS, JUDGE_FADE_MS, JUDGE_STEP_MS, JUDGE_PIECE_MS } from '../hooks/register'
++import { helperFloor, namedEffort, hotVisible, looksLikeRedo, REDO_STAY_PROMPTS, routeTo, routeWorth, syncPlan, tipped, bounded, handoffEvidence, parseHandoffAnswer, withJevKey, parseVerdict, capped, resetLabel, HANDOFF_PROMPT, handoffMessage, withAttachments, endsOnQuestion, keepsEffort, benchGrade, benchReport, judgeFailure, contextFrom, readConfig, asSpent, cacheColor, cacheLabel, cacheClock, cacheSafe, cacheTtlOf, mostlyCached, isFollowUp, parseJevAnswer, parseJevKey, savedText, forkOutcome, setupNext, setupBack, setupCounter, dashboardLines, flashColor, handoffGlowStep, weighted, handoffLook, isNewer, latestRelease, updateSnoozed, updateFailure, claudeCandidates, noClaudeHint, compactTranscript, judgeGlowSvg, judgeGlowAt, judgeBrightnessAt, JUDGE_RISE_MS, JUDGE_FADE_MS, JUDGE_STEP_MS, JUDGE_PIECE_MS } from '../hooks/register'
+ import { ART_COLUMNS, artFrame, artPixel, MOVING } from '../hooks/art'
+ import { isLight, lightHex, lightProps, setLight, setTheme, themedEls, themedSvg, tint, tintHex } from '../hooks/theme'
+ import { importsOf, moduleLinks, moduleOf, relPath, withTouch } from '../hooks/agents'
+@@ -2800,6 +2800,64 @@
+     expect(sent.at(-1)).toBe('claude-haiku-5-5')
+     const stats = String((await $.command.run({ command: 'effortless', args: 'stats' })).text)
+     expect(stats).toContain('Cheaper model: 2 prompts moved down, 1 redone (50 %)')
++  })
++
++  test('routeTo: down only by default; best also goes up, never past Opus', () => {
++    expect(routeTo('opus', 'sonnet')).toBe(null)
++    expect(routeTo('haiku', 'sonnet')).toBe('haiku')
++    expect(routeTo('opus', 'sonnet', true)).toBe('opus')
++    expect(routeTo('fable', 'sonnet', true)).toBe('opus')
++    expect(routeTo('fable', 'opus', true)).toBe(null)
++    expect(routeTo('sonnet', 'sonnet', true)).toBe(null)
++    expect(routeTo('haiku', 'opus', true)).toBe('haiku')
++  })
++
++  test('best for the task: a hard prompt on a Sonnet chat runs on Opus, an easy one back on Sonnet, a redo retries on Opus', { options: { modelAuto: 'best' } } as never, async ($, on) => {
++    engine(on, {}, 'claude-sonnet-5-5')
++    let verdict = '{"model":"opus","effort":"high","why":"big refactor"}'
++    on('model.complete', () => ({ value: { isAnswered: true as const, text: verdict, usage: USAGE } }))
++    const sent = recordSteps(on)
++    const ask = async (v: string, text: string) => {
++      verdict = v
++      await $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } })
++      for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'claude-sonnet-5-5', effort: 'high', messageCount: 1 })) {
++        // drain
++      }
++    }
++    await ask('{"model":"opus","effort":"high","why":"big refactor"}', 'refactor the whole auth layer')
++    expect(sent.at(-1)).toEqual({ model: 'claude-opus-5-5', effort: 'high' })
++    // A follow-up keeps the pair: still Opus.
++    await ask('{"model":"sonnet","effort":"low","why":"chat"}', 'go')
++    expect(sent.at(-1)?.model).toBe('claude-opus-5-5')
++    await ask('{"model":"sonnet","effort":"medium","why":"small edit"}', 'rename the helper in utils.ts')
++    expect(sent.at(-1)).toEqual({ model: 'claude-sonnet-5-5', effort: 'medium' })
++    await ask('{"model":"sonnet","effort":"medium","why":"small edit"}', "no that's wrong, it still fails")
++    expect(sent.at(-1)?.model).toBe('claude-opus-5-5')
++    const stats = String((await $.command.run({ command: 'effortless', args: 'stats' })).text)
++    expect(stats).toContain('Better model: 2 prompts moved up to Opus')
++  })
++
++  test('best for the task: a model the person picks themselves stops routing until Auto is switched on again', { options: { modelAuto: 'best' } } as never, async ($, on) => {
++    engine(on, {}, 'claude-sonnet-5-5')
++    on('classic.PostModelSwitch', () => ({}) as never)
++    on('model.complete', () => ({ value: { isAnswered: true as const, text: '{"model":"opus","effort":"high","why":"big refactor"}', usage: USAGE } }))
++    const sent = recordSteps(on)
++    const ask = async (model: string, text = 'refactor the whole auth layer') => {
++      await $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } })
++      for await (const _ of $.turn.step({ turnId: 't1', index: 0, model, effort: 'high', messageCount: 1 })) {
++        // drain
++      }
++    }
++    await ask('claude-sonnet-5-5')
++    expect(sent.at(-1)?.model).toBe('claude-opus-5-5')
++    await $.classic.PostModelSwitch({ from_model: 'claude-sonnet-5-5', to_model: 'claude-haiku-5-5', requested_model: null, source: 'picker', context_tokens: 0 } as never)
++    await ask('claude-haiku-5-5')
++    expect(sent.at(-1)?.model).toBe('claude-haiku-5-5')
++    // Auto off, then on: the model goes back to the judge.
++    await $.command.run({ command: 'effortless', args: 'auto' })
++    await $.command.run({ command: 'effortless', args: 'auto' })
++    await ask('claude-haiku-5-5', 'now redesign the whole data layer')
++    expect(sent.at(-1)?.model).toBe('claude-opus-5-5')
+   })
+ 
+   test('light appearance: surfaces come out pale, text reads on them, alpha and hue are kept', () => {
+diff -ru a/types/index.d.ts b/types/index.d.ts
+--- a/types/index.d.ts
++++ b/types/index.d.ts
+@@ -15,6 +15,8 @@
+   /** Prompts that ran on a cheaper model than the chat's, and how many of those the person then redid. */
+   moved: number
+   redone: number
++  /** Prompts that ran on a dearer model than the chat's (modelAuto best). */
++  up: number
+   /** Subagents the judge picked an effort for: how many per effort, their requests, and what those cost (weighted). */
+   helpers: { runs: Partial<Record<Effort, number>>; requests: number; cost: number }
+ }

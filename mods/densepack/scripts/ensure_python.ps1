@@ -1,0 +1,236 @@
+# Installs Python on Windows when the machine has none. The plugin hooks need
+# Python to run. SessionStart only.
+#
+# Each other script in this folder is Python. On a machine with no Python,
+# none of them can fix it, because the hook never starts. PowerShell ships
+# with each Windows, and this script runs where they cannot.
+#
+# It writes only the saved Python path and one marker file, changes no
+# setting and blocks nothing. On a machine that already has Python, it prints
+# nothing and exits.
+#
+# Claude Code reads the stdout of a hook as JSON. The only output here is one
+# JSON object with systemMessage, the field that Claude Code shows on screen.
+
+$ErrorActionPreference = 'SilentlyContinue'
+
+# The bare name "python" can resolve to the Windows Store alias stub, which
+# only opens the Microsoft Store. The script accepts a path under WindowsApps
+# only when the test run below passes.
+#
+# The folders are the ones that run_hook.ps1 searches, with quotes trimmed
+# and absolute paths only. This script then finds the Python that the hooks
+# find. Each candidate gets a test run. The Store stub, a py launcher with no
+# Python behind it, and a Python older than 3.10 (Pillow 12 has no wheel for
+# it) all count as none.
+function Test-Python($c) {
+    # The test reads the version that it prints, not the exit code.
+    # Otherwise, a .bat or .cmd that ignores its arguments and exits 0 passes
+    # as an interpreter, and each hook then starts it and does nothing.
+    # The probe has a time limit. One candidate that never returns holds
+    # session start until the hook timeout. The script kills a probe after 10
+    # seconds, and that candidate counts as no Python.
+    $si = New-Object Diagnostics.ProcessStartInfo
+    $si.FileName = $c
+    $si.Arguments = '-c "import sys; print(''DENSEPACKPY'', sys.version_info[0], sys.version_info[1])"'
+    $si.UseShellExecute = $false
+    $si.RedirectStandardOutput = $true
+    $si.RedirectStandardError = $true
+    $si.CreateNoWindow = $true
+    $si.WorkingDirectory = (Split-Path -LiteralPath $c)
+    try { $p = [Diagnostics.Process]::Start($si) } catch { return $false }
+    # The script drains BOTH streams. Otherwise, a Python that writes to
+    # stderr at startup fills the pipe and blocks until the kill below, and a
+    # working Python then counts as none.
+    $read = $p.StandardOutput.ReadToEndAsync()
+    $null = $p.StandardError.ReadToEndAsync()
+    if (-not $p.WaitForExit(10000)) {
+        try { $p.Kill() } catch { }
+        return $false
+    }
+    $out = ($read.Result -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1)
+    if ("$out".Trim() -match '^DENSEPACKPY (\d+) (\d+)$') {
+        return ([int]$Matches[1] -gt 3) -or ([int]$Matches[1] -eq 3 -and [int]$Matches[2] -ge 10)
+    }
+    return $false
+}
+
+function Find-Python {
+    $dirs = @($env:PATH -split ';' | ForEach-Object { $_.Trim('"') } |
+              Where-Object { $_ -match '^([A-Za-z]:[\\/]|\\\\)' })
+    # The same order as the run_hook.ps1 search, with plain folders first
+    # and WindowsApps last.
+    foreach ($pass in @('plain', 'store')) {
+        foreach ($name in @('python3', 'python', 'py')) {
+            foreach ($dir in $dirs) {
+                if (($pass -eq 'store') -ne ($dir -match 'WindowsApps')) { continue }
+                # A pyenv-win shim is python.bat. Save-PythonPath stores the
+                # real python.exe behind it, and run_hook.ps1 starts that.
+                foreach ($ext in @('.exe', '.bat', '.cmd')) {
+                    $c = Join-Path $dir "$name$ext"
+                    if ((Test-Path -LiteralPath $c) -and (Test-Python $c)) { return $c }
+                }
+            }
+        }
+    }
+    foreach ($found in @(Get-ChildItem "$env:LOCALAPPDATA\Programs\Python" -Filter 'python.exe' `
+                          -Recurse -Depth 1 -ErrorAction SilentlyContinue)) {
+        if (Test-Python $found.FullName) { return $found.FullName }
+    }
+    return $null
+}
+
+function Say($text) {
+    $payload = @{ systemMessage = $text } | ConvertTo-Json -Compress
+    [Console]::Out.Write($payload)
+}
+
+# Save the chosen Python under the home folder, where a project cannot
+# write. run_hook.ps1 starts the Windows form first, and run_hook.sh starts
+# the Git Bash form first. An old Python earlier on PATH never runs a hook.
+function Save-PythonPath($p) {
+    # The function does not save the Python of a virtual environment. A saved
+    # one starts in each later hook, also after that environment leaves PATH.
+    # The function returns true, not false. This Python works, and the hooks
+    # find it on PATH. Only the save is skipped, and the caller must not
+    # report that there is no Python.
+    & $p -c "import sys; sys.exit(sys.prefix != sys.base_prefix)" 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { return $true }
+    # The path of the interpreter, not of the launcher. py.exe and a
+    # pyenv-win shim choose their Python from the project folder.
+    $real = (& $p -c "import sys; print(sys.executable)" 2>$null | Select-Object -Last 1)
+    if ($real) { $p = "$real".Trim() }
+    # run_hook.ps1 starts this path directly, and it starts an exe. The
+    # function does not save a shim that names no exe. The hooks then search
+    # PATH again.
+    if ($p -notmatch '\.exe$') { return $false }
+    # run_hook.ps1 reads USERPROFILE. Git Bash reads HOME.
+    $homes = @($env:USERPROFILE)
+    if ($env:HOME -and $env:HOME -match '^[A-Za-z]:[\\/]' -and $env:HOME -ne $env:USERPROFILE) { $homes += $env:HOME }
+    foreach ($h in $homes) {
+        if (-not $h) { continue }
+        try {
+            $dir = Join-Path $h '.claude\densepack-state'
+            $null = New-Item -ItemType Directory -Force -Path $dir
+            # The path goes to a file of its own and then moves into place.
+            # A hook never reads a half-written path.
+            $winfile = Join-Path $dir 'python-path-win'
+            [IO.File]::WriteAllText("$winfile.$PID", $p + "`n")
+            Move-Item -LiteralPath "$winfile.$PID" -Destination $winfile -Force
+            $shfile = Join-Path $dir 'python-path'
+            if ($p -match '^([A-Za-z]):[\\/](.*)$') {
+                $sh = '/' + $Matches[1].ToLower() + '/' + ($Matches[2] -replace '\\', '/')
+                [IO.File]::WriteAllText("$shfile.$PID", $sh + "`n")
+                Move-Item -LiteralPath "$shfile.$PID" -Destination $shfile -Force
+            } else {
+                # A network path has no Git Bash form. An older saved path must
+                # not stay.
+                Remove-Item -LiteralPath $shfile -ErrorAction SilentlyContinue
+            }
+        } catch { } finally {
+            # A failed move, such as 2 sessions at once, leaves no temp file.
+            Remove-Item -LiteralPath "$dir\python-path-win.$PID", "$dir\python-path.$PID" -ErrorAction SilentlyContinue
+        }
+    }
+    return $true
+}
+
+# When the save fails, the script continues to the message below. A machine
+# whose only candidate names no exe then gets the reason why its hooks do
+# nothing.
+# DensePack runs Claude Code with Bash. On Windows, Bash comes with Git for Windows.
+# When no Git Bash is found, the script installs Git for Windows for this user
+# with winget, one attempt per machine, like Python below. bootstrap.py then
+# sets the two settings that make Claude Code use Git Bash. The install is for
+# this user only, so it asks for no admin rights. Returns the message to show,
+# or $null when there is nothing to say.
+function Find-GitBash {
+    $places = @()
+    foreach ($v in @($env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)})) {
+        if ($v) { $places += Join-Path $v 'Git\bin\bash.exe' }
+    }
+    if ($env:LOCALAPPDATA) { $places += Join-Path $env:LOCALAPPDATA 'Programs\Git\bin\bash.exe' }
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if ($git) { $places += Join-Path (Split-Path (Split-Path $git.Source)) 'bin\bash.exe' }
+    foreach ($p in $places) { if (Test-Path -LiteralPath $p) { return $p } }
+    return $null
+}
+
+function Install-GitBash {
+    if (Find-GitBash) { return $null }
+    $data = $env:CLAUDE_PLUGIN_DATA
+    if (-not $data) { $data = Join-Path $env:LOCALAPPDATA 'densepack' }
+    $null = New-Item -ItemType Directory -Force -Path $data
+    $tried = Join-Path $data 'git-install-tried'
+    if (Test-Path $tried) { return $null }
+    Set-Content -Path $tried -Value 'tried' -Encoding utf8
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        return ("DensePack runs commands in Bash, which comes with Git for Windows. This computer has " +
+                "neither Git for Windows nor winget. Install Git for Windows from git-scm.com, then " +
+                "restart Claude Code.")
+    }
+    winget install --id Git.Git -e --source winget --scope user `
+        --accept-package-agreements --accept-source-agreements --silent 2>$null | Out-Null
+    if (Find-GitBash) {
+        return ("DensePack installed Git for Windows, which brings Bash. Restart Claude Code. From the " +
+                "next session, commands and searches run in Bash, and DensePack packs their output.")
+    }
+    return ("DensePack tried to install Git for Windows, which brings Bash, and it did not appear. " +
+            "Install Git for Windows from git-scm.com, then restart Claude Code.")
+}
+
+$py = Find-Python
+if ($py -and (Save-PythonPath $py)) {
+    $gitNote = Install-GitBash
+    if ($gitNote) { Say $gitNote }
+    exit 0
+}
+
+# One attempt per machine. winget takes about a minute. On a machine where it
+# cannot succeed, a repeat at each session start delays each session for no
+# gain. Delete this file to let it try again.
+$data = $env:CLAUDE_PLUGIN_DATA
+if (-not $data) { $data = Join-Path $env:LOCALAPPDATA 'densepack' }
+$null = New-Item -ItemType Directory -Force -Path $data
+$tried = Join-Path $data 'python-install-tried'
+$running = Join-Path $data 'python-install-running'
+if (Test-Path $tried) {
+    Say ("DensePack found no Python 3.10 or newer. None of its hooks run, and reports " +
+        "arrive as plain text. It already tried to install Python once on " +
+        "this computer. Install Python 3.10 or newer, then restart Claude Code.")
+    exit 0
+}
+# The install runs in its own process, because on a slow connection it can take
+# longer than the 10 minutes that Claude Code gives a hook. The tried marker is
+# written when the install ends. A running marker older than 60 minutes comes
+# from an install that did not end, such as one cut by a shutdown, and the next
+# session tries again.
+if ((Test-Path $running) -and (Get-Item $running).LastWriteTime -gt (Get-Date).AddMinutes(-60)) {
+    Say ("DensePack is still installing Python 3.13 in the background. Restart " +
+        "Claude Code when the install is done. Until then, reports arrive as plain text.")
+    exit 0
+}
+
+if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    Set-Content -Path $tried -Value 'tried' -Encoding utf8
+    Say ("DensePack needs Python 3.10 or newer, and this computer has none. " +
+        "None of its hooks run, and reports arrive as plain text. winget is " +
+        "not installed either. Install Python from python.org, then restart " +
+        "Claude Code.")
+    exit 0
+}
+
+Set-Content -Path $running -Value 'running' -Encoding utf8
+$t = $tried -replace "'", "''"
+$r = $running -replace "'", "''"
+# Tcl/Tk and the test suite are most of the files, and DensePack uses neither.
+# In Windows Sandbox, the Tcl/Tk step alone took over 10 minutes.
+$job = "winget install --id Python.Python.3.13 -e --source winget --scope user --custom 'Include_tcltk=0 Include_test=0' " +
+    "--accept-package-agreements --accept-source-agreements *> `$null; " +
+    "Set-Content -LiteralPath '$t' -Value ('winget exit ' + `$LASTEXITCODE) -Encoding utf8; " +
+    "Remove-Item -LiteralPath '$r' -ErrorAction SilentlyContinue"
+Start-Process powershell -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $job)
+Say ("DensePack is installing Python 3.13 in the background, because its hooks " +
+    "need Python 3.10 or newer. On a slow connection this takes several minutes. " +
+    "Restart Claude Code when the install is done. Until then, reports arrive as plain text.")
+exit 0

@@ -1,29 +1,55 @@
 # Claude Optimized Workflow
 
-A shareable Claude Code setup for coding: plugins, skills, hooks, the instructions file
-that says when to use each skill, and the MCP servers behind it.
+A Claude Code setup tuned for coding, researched and trimmed down to what earns its context
+cost: a routing table that picks **0–1 skills per task**, a curated set of plugins, MCP
+servers, hooks, subagents, and "mods" that cut token use.
 
-## Layout
+## Install
 
-| Path | Contents |
-|---|---|
-| `plugins.md` | coding-relevant plugins and what each is for |
-| `mcp/mcp.json` | Firecrawl and GitHub MCP servers (placeholders only, no keys) |
-| `workflow/` | `CLAUDE.md`, hooks, skills, commands, sanitized `settings.json` |
-| `scripts/export-from-local.sh` | pull the above out of `~/.claude` (skips secrets and Roblox/3D) |
-| `scripts/install.sh` | install into someone else's `~/.claude`, with backups |
+```bash
+git clone https://github.com/Udhayveer101/Claude-Optimized-workflow
+cd Claude-Optimized-workflow
+scripts/install.sh --dry-run    # see what it will do
+scripts/install.sh              # do it (needs jq)
+```
 
-## Status
+Existing files are backed up as `*.bak.<timestamp>`. `settings.json` is **merged**, not
+replaced: your values win, mine are added. Flags: `--no-mods`, `--no-mcp`. Restart Claude
+Code afterwards and accept the plugin installs it offers.
 
-`workflow/` is empty. The instructions file, hooks, and the `superpowers` and
-`full-stack-dev` plugins live on the author's own machine, not in the cloud session that
-created this repo. Populate it with:
+## What you get
 
-    ./scripts/export-from-local.sh --dry-run   # check the list
-    ./scripts/export-from-local.sh
-    git add -A && git commit -m "Add workflow" && git push
+| Piece | Where | Details |
+|---|---|---|
+| Routing table | `workflow/CLAUDE.md` | which skill for which task, and which never to combine. Always loaded (~3 KB) |
+| Full catalog | `workflow/skills-routing.md`, `skills-catalog-extra.md` | priority and "don't pair with" for every skill; read on demand |
+| Skills | `workflow/skills/` | 32 skills, see [skills.md](skills.md) |
+| Plugins | [plugins.md](plugins.md) | 8 on, a few deliberately off |
+| MCP servers | [mcp/](mcp/) | Firecrawl, Playwright, Motion, Cloudflare docs, claude-mem |
+| Subagents | `workflow/agents/` | `savvy-*` worker tiers used by `/savvy-flow`, plus `motion-reviewer` |
+| Hooks | `workflow/hooks/` | `protect-secrets` (blocks edits to `.env`, keys, certs), `format` (dart/go) |
+| Mods | [mods/](mods/) | cache-watch, compact-keeper, compact-shaper, output-diet, densepack |
+| Settings | `workflow/settings.template.json` | output style `Concise`, hooks, marketplaces, enabled plugins |
 
-## Secrets
+## The ideas
 
-Never commit `.credentials.json` or the `env` block of `settings.json`. The export script
-drops both; check the diff anyway.
+- **Few skills, loaded rarely.** Every skill and plugin costs context. Overlapping ones are
+  disabled; the routing table names one primary per task type and a fallback.
+- **Evidence before claims.** Debugging finds the cause before editing; nothing is called
+  done without running verification.
+- **Cheap context.** Concise output style, trimmed shell output, handoff-shaped compaction.
+- **Secrets stay out.** A hook refuses edits to credential files.
+
+## Needs
+
+- Claude Code, `jq`, Node (`npx`) for the MCP servers.
+- A Firecrawl API key if you keep the web-reading rules (`export FIRECRAWL_API_KEY=...`). If
+  you do not use Firecrawl, delete the "Web search" line in `~/.claude/CLAUDE.md`.
+- Mods need a Claude Code build that supports `CLAUDE_CODE_PLUGIN_DIRS`.
+
+## Credits and licenses
+
+Most skills, plugins and the mods are other people's work, bundled or referenced with their
+licenses kept (`mods/LICENSE-*`, per-skill `LICENSE` files). `ai-fix` is
+[mine](https://github.com/Udhayveer101/ai-fix). Check a skill's own license before
+redistributing it.

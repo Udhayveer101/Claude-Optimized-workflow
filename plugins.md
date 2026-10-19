@@ -1,21 +1,28 @@
 # Plugins
 
-Coding-relevant plugins that are synced to the source account. Roblox / 3D-generation
-tooling and the `legal` plugin are intentionally left out.
+`install.sh` adds the marketplaces and enables the **on** plugins through `settings.json`;
+Claude Code installs them on next start.
 
-| Plugin | Marketplace | Why it is here |
+## On
+
+| Plugin | Marketplace | What it does |
 |---|---|---|
-| engineering | knowledge-work-plugins | code review, debugging, architecture, testing strategy, deploy checklist |
-| impeccable | impeccable | frontend design: audit, polish, critique, anti-pattern detection |
-| design | knowledge-work-plugins | accessibility review, design handoff, UX copy |
-| watch | claude-video | answer questions about a video (yt-dlp + ffmpeg) |
-| humanizer | humanizer | clean up AI-sounding docs and READMEs |
-| pdf-viewer | knowledge-work-plugins | read and annotate PDFs |
+| ponytail | DietrichGebert/ponytail | laziness ladder: smallest correct change, terse output |
+| claude-mem | thedotmack/claude-mem | persistent memory across sessions + `mem-search`, `smart-explore` |
+| ui-ux-pro-max | nextlevelbuilder/ui-ux-pro-max-skill | the UI/UX skill: styles, palettes, fonts, per-stack code |
+| frontend-design | anthropics/claude-plugins-official | distinctive visual direction for blank-slate UI |
+| code-review | anthropics/claude-plugins-official | `/code-review` for PRs and diffs |
+| andrej-karpathy-skills | multica-ai/andrej-karpathy-skills | surgical edits, surface assumptions, verifiable goals |
+| cloudflare | cloudflare/skills | Workers, wrangler, Durable Objects, web-perf, docs MCP |
+| effortless | HeyCubit/effortless | effort/model routing (see `mods/effortless-best-model.patch`) |
 
-## Not captured yet (not present when this repo was generated)
+## Off (installed, disabled to save context)
 
-- `superpowers`
-- `full-stack-dev`
-- the personal instructions file (`CLAUDE.md`) and any custom hooks
+`superpowers` (obra/superpowers; its `systematic-debugging`, `verification-before-completion`
+and `writing-plans` are kept as standalone skills), `fullstack-dev-skills`
+(Jeffallan/claude-skills), `playground`, `claude-code-setup`, `caveman`.
 
-Run `scripts/export-from-local.sh` on the machine where they live; see README.
+## Optional, from the Claude desktop app
+
+`engineering`, `design`, `impeccable`, `pdf-viewer`, `watch`, `humanizer`, `legal`. In the
+routing table these lose to the standalone skills in `workflow/skills/`.
